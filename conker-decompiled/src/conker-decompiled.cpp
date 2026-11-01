@@ -1,7 +1,3 @@
-#pragma comment(lib, "mfplat.lib")
-#pragma comment(lib, "mfuuid.lib")
-#pragma comment(lib, "shlwapi.lib")
-
 // Dear ImGui: standalone example application for Windows API + DirectX 11 + Native Video Playback
 #include <Windows.h>
 #include <cstdio>
@@ -12,13 +8,7 @@
 #include <d3d11.h>
 #include <tchar.h>
 
-// Windows Media Foundation Headers
-#include <mfmediaengine.h>
-#include <mfapi.h>
-#include <wrl/client.h>
-
-using Microsoft::WRL::ComPtr;
-
+#include "media/VideoPlayer.hpp"
 // Data
 static ID3D11Device* g_pd3dDevice = nullptr;
 static ID3D11DeviceContext* g_pd3dDeviceContext = nullptr;
@@ -27,43 +17,6 @@ static bool                     g_SwapChainOccluded = false;
 static UINT                     g_ResizeWidth = 0, g_ResizeHeight = 0;
 static ID3D11RenderTargetView* g_mainRenderTargetView = nullptr;
 
-// Media Foundation State Variables
-static ComPtr<IMFMediaEngine>       g_pMediaEngine = nullptr;
-static ID3D11Texture2D* g_pVideoTexture = nullptr;
-static ID3D11ShaderResourceView* g_pVideoSRV = nullptr;
-static bool                         g_VideoPlaying = false;
-static int                          g_VideoWidth = 640;
-static int                          g_VideoHeight = 360;
-
-// Dummy callback class required to initialize IMFMediaEngine
-class MediaEngineNotify : public IMFMediaEngineNotify {
-public:
-    STDMETHODIMP QueryInterface(REFIID riid, void** ppvObject) {
-        if (!ppvObject) return E_POINTER;
-        if (riid == __uuidof(IUnknown) || riid == __uuidof(IMFMediaEngineNotify)) {
-            *ppvObject = this; AddRef(); return S_OK;
-        }
-        *ppvObject = nullptr; return E_NOINTERFACE;
-    }
-    STDMETHODIMP_(ULONG) AddRef() { return 1; }
-    STDMETHODIMP_(ULONG) Release() { return 1; }
-    STDMETHODIMP EventNotify(DWORD Event, DWORD_PTR Param1, DWORD Param2) {
-        if (Event == MF_MEDIA_ENGINE_EVENT_CANPLAY) {
-            g_VideoPlaying = true;
-            if (g_pMediaEngine) {
-                g_pMediaEngine->Play();
-            }
-        }
-        else if (Event == MF_MEDIA_ENGINE_EVENT_ERROR) {
-            // Param1 contains the error type, Param2 contains the exact HRESULT error code
-            char errorLog[256];
-            std::snprintf(errorLog, sizeof(errorLog), "[Media Engine Error] Type: %lld, HRESULT: 0x%lX\n", (long long)Param1, (long)Param2);
-            OutputDebugStringA(errorLog); // Prints directly into the Visual Studio Output Window
-        }
-        return S_OK;
-    }
-};
-static MediaEngineNotify g_MediaEngineNotify;
 
 // Forward declarations of helper functions
 bool CreateDeviceD3D(HWND hWnd);
@@ -71,89 +24,6 @@ void CleanupDeviceD3D();
 void CreateRenderTarget();
 void CleanupRenderTarget();
 LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
-
-// Native Video Initialization Functions
-bool InitMediaEngine(ID3D11Device* device, const wchar_t* videoPath)
-{
-    // Initialize MF platform subsystem
-    if (FAILED(MFStartup(MF_VERSION))) return false;
-
-    // Direct3D Manager generation for the playback device context
-    ComPtr<IMFDXGIDeviceManager> pDXGIManager;
-    UINT resetToken = 0;
-    if (FAILED(MFCreateDXGIDeviceManager(&resetToken, &pDXGIManager))) return false;
-    if (FAILED(pDXGIManager->ResetDevice(device, resetToken))) return false;
-
-    // Attributes setup
-    ComPtr<IMFAttributes> pAttributes;
-    if (FAILED(MFCreateAttributes(&pAttributes, 4))) return false;
-    if (FAILED(pAttributes->SetUnknown(MF_MEDIA_ENGINE_DXGI_MANAGER, pDXGIManager.Get()))) return false;
-    if (FAILED(pAttributes->SetUnknown(MF_MEDIA_ENGINE_CALLBACK, &g_MediaEngineNotify))) return false;
-    if (FAILED(pAttributes->SetUINT32(MF_MEDIA_ENGINE_VIDEO_OUTPUT_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM))) return false;
-
-    // Factory creation
-    ComPtr<IMFMediaEngineClassFactory> pFactory;
-    if (FAILED(CoCreateInstance(CLSID_MFMediaEngineClassFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pFactory)))) return false;
-    if (FAILED(pFactory->CreateInstance(0, pAttributes.Get(), &g_pMediaEngine))) return false;
-
-    // Load file resource URL 
-    BSTR bstrURL = SysAllocString(videoPath);
-    auto res = g_pMediaEngine->SetSource(bstrURL);
-    SysFreeString(bstrURL);
-
-    // Command play configuration
-    return true;
-}
-
-void UpdateVideoFrame()
-{
-    if (!g_pMediaEngine) return;
-
-    LONGLONG pts;
-    auto res = g_pMediaEngine->OnVideoStreamTick(&pts);
-    if (res == S_OK)
-    {
-        DWORD width = 0, height = 0;
-        g_pMediaEngine->GetNativeVideoSize(&width, &height);
-        if (width == 0 || height == 0) return;
-
-        // Lazy initialize matching D3D resources if canvas dimensions drift or update
-        if (!g_pVideoTexture || g_VideoWidth != width || g_VideoHeight != height)
-        {
-            g_VideoWidth = width;
-            g_VideoHeight = height;
-
-            if (g_pVideoTexture) { g_pVideoTexture->Release(); g_pVideoTexture = nullptr; }
-            if (g_pVideoSRV) { g_pVideoSRV->Release(); g_pVideoSRV = nullptr; }
-
-            D3D11_TEXTURE2D_DESC desc = {};
-            desc.Width = width;
-            desc.Height = height;
-            desc.MipLevels = 1;
-            desc.ArraySize = 1;
-            desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-            desc.SampleDesc.Count = 1;
-            desc.Usage = D3D11_USAGE_DEFAULT;
-            desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
-
-            g_pd3dDevice->CreateTexture2D(&desc, nullptr, &g_pVideoTexture);
-            g_pd3dDevice->CreateShaderResourceView(g_pVideoTexture, nullptr, &g_pVideoSRV);
-        }
-
-        // Blit engine decoder surfaces directly into your active DX11 texture resource target
-        MFVideoNormalizedRect rect = { 0.0f, 0.0f, 1.0f, 1.0f };
-        RECT destRect = { 0, 0, g_VideoWidth, g_VideoHeight };
-        g_pMediaEngine->TransferVideoFrame(g_pVideoTexture, &rect, &destRect, nullptr);
-    }
-}
-
-void ShutdownMediaEngine()
-{
-    if (g_pVideoTexture) { g_pVideoTexture->Release(); g_pVideoTexture = nullptr; }
-    if (g_pVideoSRV) { g_pVideoSRV->Release(); g_pVideoSRV = nullptr; }
-    if (g_pMediaEngine) { g_pMediaEngine->Shutdown(); g_pMediaEngine = nullptr; }
-    MFShutdown();
-}
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR pCmdLine, int nCmdShow)
 {
@@ -197,9 +67,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR pCmdLine, 
     ImGui_ImplWin32_Init(hwnd);
     ImGui_ImplDX11_Init(g_pd3dDevice, g_pd3dDeviceContext);
 
-    // Start video playback (Replace payload string with your converted video path)
-    InitMediaEngine(g_pd3dDevice, L"C:\\Users\\Administrator\\source\\repos\\conker-decompiled\\conker-decompiled\\BootIntro.mp4");
-
+    VideoPlayer videoPlayer{};
+	videoPlayer.Initialize(g_pd3dDevice);
+	videoPlayer.Open(L"C:\\Users\\Administrator\\source\\repos\\conker-decompiled\\conker-decompiled\\BootIntro.mp4", false, true);
+    
     bool done = false;
     while (!done)
     {
@@ -231,30 +102,27 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR pCmdLine, 
         }
 
         // Fetch newly unrolled video texture payloads from Media Foundation
-        if (g_VideoPlaying) {
-
-            UpdateVideoFrame();
-        }
-
+		
         ImGui_ImplDX11_NewFrame();
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
 
         // Display the Native Video Window
         {
-            ImGui::Begin("Native MP4 Playback Layer");
 
-            if (g_pVideoSRV)
-            {
-                // Pull texture width/height and feed straight to ImGui image element
-                ImGui::Image((ImTextureID)g_pVideoSRV, ImVec2((float)g_VideoWidth, (float)g_VideoHeight));
-            }
-            else
-            {
-                ImGui::Text("Opening video resource stream...");
-            }
+            if (videoPlayer.IsFinished()) {
 
-            ImGui::End();
+                ImGui::Begin("Native MP4 Playback Ended");
+
+
+
+                ImGui::End();
+            }
+            else 
+            if (videoPlayer.IsReady()) {
+                videoPlayer.Update();
+                videoPlayer.DrawImGuiWindow("asd");
+            }
         }
 
         // Clear and render backends
@@ -267,8 +135,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR pCmdLine, 
         g_pSwapChain->Present(1, 0);
     }
 
-    // Pipeline destruction sequences
-    ShutdownMediaEngine();
+    videoPlayer.Shutdown();
     ImGui_ImplDX11_Shutdown();
     ImGui_ImplWin32_Shutdown();
     ImGui::DestroyContext();
@@ -304,6 +171,8 @@ bool CreateDeviceD3D(HWND hWnd)
     sd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
 
     UINT createDeviceFlags = 0;
+    createDeviceFlags |= D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
+	createDeviceFlags |= D3D11_CREATE_DEVICE_BGRA_SUPPORT;
     //createDeviceFlags |= D3D11_CREATE_DEVICE_DEBUG;
     D3D_FEATURE_LEVEL featureLevel;
     const D3D_FEATURE_LEVEL featureLevelArray[2] = { D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_0, };

@@ -148,6 +148,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="src\conker-decompiled.cpp" />
+    <ClCompile Include="src\media\VideoPlayer.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\externals\imgui\imgui.vcxproj">
@@ -155,7 +156,7 @@
     </ProjectReference>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="src\VideoPlayer.hpp" />
+    <ClInclude Include="src\media\VideoPlayer.hpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

@@ -18,9 +18,12 @@
     <ClCompile Include="src\conker-decompiled.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="src\media\VideoPlayer.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="src\VideoPlayer.hpp">
+    <ClInclude Include="src\media\VideoPlayer.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
