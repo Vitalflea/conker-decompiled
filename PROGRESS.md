@@ -2,6 +2,8 @@
 
 Target binary under active study: **default.xbe** (Mar 14, 2005 prototype), via IDA Pro (ida-pro-mcp).
 
+Current goal: **port to Windows x86** — native Win32 C/C++ built with MSVC, rendered with **DirectX 11**, UI/debug overlays via **Dear ImGui**. Completion = compiles and runs with behaviour matching the retail game; byte-exactness is retired as a requirement (kept only as optional cross-check).
+
 ## Done
 | Item | Status | Notes |
 |---|---|---|
@@ -12,7 +14,8 @@ Target binary under active study: **default.xbe** (Mar 14, 2005 prototype), via 
 | Memory subsystem mapped | partial | custom debug malloc (sub_2A7B00/2A7E60/3DDF20), source-file/line tags on allocations (`D:\work\Bfd\Game\...`) |
 
 ## Next steps
-1. Full IFSL/import enumeration for all module ids (0x0001…): sizes, checksums, section boundaries per module.
-2. Identify what `sub_233E0`'s object model is (vtable layouts at +8/+12; method slots used) — this defines the class hierarchy to reconstruct first.
-3. Reconstruct the smallest verifiable unit first: `start()` + wrappers (sub_4239F9/sub_4237F2/sub_4237C4/sub_42728E) into C++ mirroring Xbox SDK types, then build and diff bytes against [0x426A40..0x426AD0+...].
-4. Pin down period-correct compiler (MSVC version family used by Konami 2005 Xbox builds) before declaring byte-exactness achievable end-to-end.
+1. Port scaffold: DX11 device/swap-chain init, Win32 window, main loop, input polling; Dear ImGui debug overlay wired in.
+2. Kernel/XDK call mapping table: `PsCreateSystemThreadEx` → Win32 threads/`std::thread`; XACT/XMV/WMA media pipeline → WASAPI decoders; D3D9 render state → DX11 equivalents.
+3. First executable slice: boot chain (`start` + wrappers `sub_4239F9` / `sub_4237F2` / `sub_4237C4` / `sub_42728E`) ported to C++ and run under MSVC (Win32/x86); validate startup sequence against the decompiled boot path.
+4. Asset pipeline: extract and convert ISO assets (fonts, audio, textures) into formats the DX11 port consumes.
+5. Continue IFSL/import enumeration and map `sub_233E0`'s object model (vtables at +8/+12) to define the class hierarchy to port next.
