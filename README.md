@@ -70,10 +70,10 @@ Optional binary diffing against the retail image remains available during analys
 
 - [x] Goal change adopted: byte-exactness retired in favour of a working Windows x86 port (DX11 + imgui)
 - [x] Ground truth established: IDB matches the raw `default.xbe` region-for-region (≈7.5 MB verified); VA = file offset + 0x1000
-- [x] Boot chain decompiled (`start` @ 0x426AD0 → thread creation → main routine `sub_16C740` → dispatcher `sub_233E0`)
-- [ ] Port scaffold: DX11 window/device init, main loop, input polling
-- [ ] Xbox kernel/XDK call mapping table completed (threads, audio, media, input)
-- [ ] First executable slice: boot chain + menu screen reproduced with imgui
+- [x] Boot chain analyzed (`start` @ 0x426AD0 → Xbox thread wrapper → game startup routine near 0x16C7E8 → dispatcher `sub_233E0`); the current Windows boot-chain source is exploratory and not yet a validated game port
+- [ ] Host scaffold made project-owned and stable (Win32 main-thread loop, DX11, ImGui debug/status panel)
+- [ ] First bounded game-facing slice selected from verified IDA call graph and reproduced with an observable result
+- [ ] Title/menu startup path and minimum required assets traced
 - [ ] Asset pipeline wired up (fonts, audio, textures from the ISO)
 
 ## Notes
@@ -81,3 +81,4 @@ Optional binary diffing against the retail image remains available during analys
 - The ISO content is kept read-only in this repository and serves as ground-truth input for the reverse engineering; it is never modified or redistributed.
 - Findings are recorded as annotations on the IDA database plus the ported source tree, each unit annotated with its originating retail address(es).
 - The port is an independent reimplementation of logic and assets' *use*; it does not modify the original binaries.
+- Xbox startup and kernel behavior are analyzed to understand game initialization. Recreate only the services needed by a chosen game-facing slice; see `docs/startup-path.md` before extending the current `bootchain.cpp` prototype.

@@ -10,12 +10,15 @@ Current goal: **port to Windows x86** — native Win32 C/C++ built with MSVC, re
 | README & project charter | done | `README.md` at repo root |
 | Image layout decode | done | VA = file offset + 0x1000; sections 0x1000..0x75E000; header fields at 0x920–0x934; name list 0x984; import entries stride-20 from 0xA60 — see `docs/image-layout.md` |
 | Entry points | done | `start` @ 0x426AD0, `kernel_thunk` @ 0x558660 |
-| Boot chain decompilation | done | start -> sub_425C71 (PsCreateSystemThreadEx) -> thread entry sub_425BD9 -> main routine sub_16C740 -> dispatcher sub_233E0; abort paths sub_42728E / sub_4237F2 — see `docs/startup-path.md` |
+| Boot chain analysis | done (analysis only) | start -> sub_425C71 -> sub_425BD9 -> game routine at 0x16C7E8 -> sub_233E0; Xbox OS glue is reference material, not a required Windows port layer; see `docs/startup-path.md` |
 | Memory subsystem mapped | partial | custom debug malloc (sub_2A7B00/2A7E60/3DDF20), source-file/line tags on allocations (`D:\work\Bfd\Game\...`) |
 
 ## Next steps
-1. Port scaffold: DX11 device/swap-chain init, Win32 window, main loop, input polling; Dear ImGui debug overlay wired in.
-2. Kernel/XDK call mapping table: `PsCreateSystemThreadEx` → Win32 threads/`std::thread`; XACT/XMV/WMA media pipeline → WASAPI decoders; D3D9 render state → DX11 equivalents.
-3. First executable slice: boot chain (`start` + wrappers `sub_4239F9` / `sub_4237F2` / `sub_4237C4` / `sub_42728E`) ported to C++ and run under MSVC (Win32/x86); validate startup sequence against the decompiled boot path.
-4. Asset pipeline: extract and convert ISO assets (fonts, audio, textures) into formats the DX11 port consumes.
-5. Continue IFSL/import enumeration and map `sub_233E0`'s object model (vtables at +8/+12) to define the class hierarchy to port next.
+1. Confirm the host scaffold runs on the Windows main thread; replace the stock ImGui demo with a project status/debug panel.
+2. Investigate `dvddata/fmv/frontend/BootIntro.xmv` as the first visible startup slice. IDA confirms literals `frontend\\BootIntro.xmv` and `frontend\\BootIntro2.xmv`; `sub_1F62A0` (`0x1F62A0`) builds a root+table path and opens it through asynchronous I/O, but its role in selecting/playing the boot video is not yet proven.
+3. Trace which caller/index selects the boot movie and follow its stream callbacks into XMV decode/audio/presentation; inspect the container streams and choose a Windows playback route after confirming codecs.
+4. Show the intro in the existing host and support skip/finish transitions.
+5. In parallel, verify the call ABI from `start` through `sub_425C71` / `sub_425BD9` and target/prototype near 0x16C7E8 before relying on those boot-chain notes.
+6. After the intro slice, trace the title/menu path and its minimum assets; add other Xbox services only when that behavior requires them.
+
+Do not prioritize a complete Xbox kernel/XDK mapping table or a literal port of the firmware fatal path. Add compatibility shims incrementally when a selected game slice needs them. The current first slice candidate is `BootIntro.xmv`; see `docs/startup-path.md` for the evidence and checklist.

@@ -3,8 +3,8 @@
     <Platform Name="x64" />
     <Platform Name="x86" />
   </Configurations>
-  <Project Path="conker-decompiled/conker-decompiled.vcxproj" />
-  <Project Path="externals/imgui/imgui.vcxproj">
+  <Project Path="conker-decompiled/conker-decompiled.vcxproj" Id="dafda95d-26c6-4a20-ba2c-2aa0f32333b4" />
+  <Project Path="externals/imgui/imgui.vcxproj" Id="1037cfad-25ed-4414-a837-3896c6212bd5">
     <BuildType Project="Stable-Release" />
   </Project>
 </Solution>

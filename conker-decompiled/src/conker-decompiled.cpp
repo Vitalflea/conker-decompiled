@@ -1,8 +1,23 @@
+#pragma comment(lib, "mfplat.lib")
+#pragma comment(lib, "mfuuid.lib")
+#pragma comment(lib, "shlwapi.lib")
+
+// Dear ImGui: standalone example application for Windows API + DirectX 11 + Native Video Playback
+#include <Windows.h>
+#include <cstdio>
+
 #include "imgui.h"
 #include "imgui_impl_win32.h"
 #include "imgui_impl_dx11.h"
 #include <d3d11.h>
 #include <tchar.h>
+
+// Windows Media Foundation Headers
+#include <mfmediaengine.h>
+#include <mfapi.h>
+#include <wrl/client.h>
+
+using Microsoft::WRL::ComPtr;
 
 // Data
 static ID3D11Device* g_pd3dDevice = nullptr;
@@ -12,6 +27,44 @@ static bool                     g_SwapChainOccluded = false;
 static UINT                     g_ResizeWidth = 0, g_ResizeHeight = 0;
 static ID3D11RenderTargetView* g_mainRenderTargetView = nullptr;
 
+// Media Foundation State Variables
+static ComPtr<IMFMediaEngine>       g_pMediaEngine = nullptr;
+static ID3D11Texture2D* g_pVideoTexture = nullptr;
+static ID3D11ShaderResourceView* g_pVideoSRV = nullptr;
+static bool                         g_VideoPlaying = false;
+static int                          g_VideoWidth = 640;
+static int                          g_VideoHeight = 360;
+
+// Dummy callback class required to initialize IMFMediaEngine
+class MediaEngineNotify : public IMFMediaEngineNotify {
+public:
+    STDMETHODIMP QueryInterface(REFIID riid, void** ppvObject) {
+        if (!ppvObject) return E_POINTER;
+        if (riid == __uuidof(IUnknown) || riid == __uuidof(IMFMediaEngineNotify)) {
+            *ppvObject = this; AddRef(); return S_OK;
+        }
+        *ppvObject = nullptr; return E_NOINTERFACE;
+    }
+    STDMETHODIMP_(ULONG) AddRef() { return 1; }
+    STDMETHODIMP_(ULONG) Release() { return 1; }
+    STDMETHODIMP EventNotify(DWORD Event, DWORD_PTR Param1, DWORD Param2) {
+        if (Event == MF_MEDIA_ENGINE_EVENT_CANPLAY) {
+            g_VideoPlaying = true;
+            if (g_pMediaEngine) {
+                g_pMediaEngine->Play();
+            }
+        }
+        else if (Event == MF_MEDIA_ENGINE_EVENT_ERROR) {
+            // Param1 contains the error type, Param2 contains the exact HRESULT error code
+            char errorLog[256];
+            std::snprintf(errorLog, sizeof(errorLog), "[Media Engine Error] Type: %lld, HRESULT: 0x%lX\n", (long long)Param1, (long)Param2);
+            OutputDebugStringA(errorLog); // Prints directly into the Visual Studio Output Window
+        }
+        return S_OK;
+    }
+};
+static MediaEngineNotify g_MediaEngineNotify;
+
 // Forward declarations of helper functions
 bool CreateDeviceD3D(HWND hWnd);
 void CleanupDeviceD3D();
@@ -19,19 +72,101 @@ void CreateRenderTarget();
 void CleanupRenderTarget();
 LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
-// Main code
-int main(int, char**)
+// Native Video Initialization Functions
+bool InitMediaEngine(ID3D11Device* device, const wchar_t* videoPath)
 {
-    // Make process DPI aware and obtain main monitor scale
+    // Initialize MF platform subsystem
+    if (FAILED(MFStartup(MF_VERSION))) return false;
+
+    // Direct3D Manager generation for the playback device context
+    ComPtr<IMFDXGIDeviceManager> pDXGIManager;
+    UINT resetToken = 0;
+    if (FAILED(MFCreateDXGIDeviceManager(&resetToken, &pDXGIManager))) return false;
+    if (FAILED(pDXGIManager->ResetDevice(device, resetToken))) return false;
+
+    // Attributes setup
+    ComPtr<IMFAttributes> pAttributes;
+    if (FAILED(MFCreateAttributes(&pAttributes, 4))) return false;
+    if (FAILED(pAttributes->SetUnknown(MF_MEDIA_ENGINE_DXGI_MANAGER, pDXGIManager.Get()))) return false;
+    if (FAILED(pAttributes->SetUnknown(MF_MEDIA_ENGINE_CALLBACK, &g_MediaEngineNotify))) return false;
+    if (FAILED(pAttributes->SetUINT32(MF_MEDIA_ENGINE_VIDEO_OUTPUT_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM))) return false;
+
+    // Factory creation
+    ComPtr<IMFMediaEngineClassFactory> pFactory;
+    if (FAILED(CoCreateInstance(CLSID_MFMediaEngineClassFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pFactory)))) return false;
+    if (FAILED(pFactory->CreateInstance(0, pAttributes.Get(), &g_pMediaEngine))) return false;
+
+    // Load file resource URL 
+    BSTR bstrURL = SysAllocString(videoPath);
+    auto res = g_pMediaEngine->SetSource(bstrURL);
+    SysFreeString(bstrURL);
+
+    // Command play configuration
+    return true;
+}
+
+void UpdateVideoFrame()
+{
+    if (!g_pMediaEngine) return;
+
+    LONGLONG pts;
+    auto res = g_pMediaEngine->OnVideoStreamTick(&pts);
+    if (res == S_OK)
+    {
+        DWORD width = 0, height = 0;
+        g_pMediaEngine->GetNativeVideoSize(&width, &height);
+        if (width == 0 || height == 0) return;
+
+        // Lazy initialize matching D3D resources if canvas dimensions drift or update
+        if (!g_pVideoTexture || g_VideoWidth != width || g_VideoHeight != height)
+        {
+            g_VideoWidth = width;
+            g_VideoHeight = height;
+
+            if (g_pVideoTexture) { g_pVideoTexture->Release(); g_pVideoTexture = nullptr; }
+            if (g_pVideoSRV) { g_pVideoSRV->Release(); g_pVideoSRV = nullptr; }
+
+            D3D11_TEXTURE2D_DESC desc = {};
+            desc.Width = width;
+            desc.Height = height;
+            desc.MipLevels = 1;
+            desc.ArraySize = 1;
+            desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+            desc.SampleDesc.Count = 1;
+            desc.Usage = D3D11_USAGE_DEFAULT;
+            desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+
+            g_pd3dDevice->CreateTexture2D(&desc, nullptr, &g_pVideoTexture);
+            g_pd3dDevice->CreateShaderResourceView(g_pVideoTexture, nullptr, &g_pVideoSRV);
+        }
+
+        // Blit engine decoder surfaces directly into your active DX11 texture resource target
+        MFVideoNormalizedRect rect = { 0.0f, 0.0f, 1.0f, 1.0f };
+        RECT destRect = { 0, 0, g_VideoWidth, g_VideoHeight };
+        g_pMediaEngine->TransferVideoFrame(g_pVideoTexture, &rect, &destRect, nullptr);
+    }
+}
+
+void ShutdownMediaEngine()
+{
+    if (g_pVideoTexture) { g_pVideoTexture->Release(); g_pVideoTexture = nullptr; }
+    if (g_pVideoSRV) { g_pVideoSRV->Release(); g_pVideoSRV = nullptr; }
+    if (g_pMediaEngine) { g_pMediaEngine->Shutdown(); g_pMediaEngine = nullptr; }
+    MFShutdown();
+}
+
+int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR pCmdLine, int nCmdShow)
+{
+    // Initialize COM wrapper requirements for Media Foundation
+    CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+
     ImGui_ImplWin32_EnableDpiAwareness();
     float main_scale = ImGui_ImplWin32_GetDpiScaleForMonitor(::MonitorFromPoint(POINT{ 0, 0 }, MONITOR_DEFAULTTOPRIMARY));
 
-    // Create application window
     WNDCLASSEXW wc = { sizeof(wc), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandle(nullptr), nullptr, nullptr, nullptr, nullptr, L"ImGui Example", nullptr };
     ::RegisterClassExW(&wc);
-    HWND hwnd = ::CreateWindowW(wc.lpszClassName, L"Dear ImGui DirectX11 Example", WS_OVERLAPPEDWINDOW, 100, 100, (int)(1280 * main_scale), (int)(800 * main_scale), nullptr, nullptr, wc.hInstance, nullptr);
+    HWND hwnd = ::CreateWindowW(wc.lpszClassName, L"Dear ImGui DirectX11 Video Example", WS_OVERLAPPEDWINDOW, 100, 100, (int)(1280 * main_scale), (int)(800 * main_scale), nullptr, nullptr, wc.hInstance, nullptr);
 
-    // Initialize Direct3D
     if (!CreateDeviceD3D(hwnd))
     {
         CleanupDeviceD3D();
@@ -39,61 +174,35 @@ int main(int, char**)
         return 1;
     }
 
-    // Show the window
+    ID3D10Multithread* pMultithread = nullptr;
+    if (SUCCEEDED(g_pd3dDevice->QueryInterface(__uuidof(ID3D10Multithread), (void**)&pMultithread)))
+    {
+        pMultithread->SetMultithreadProtected(TRUE);
+        pMultithread->Release();
+    }
+
     ::ShowWindow(hwnd, SW_SHOWDEFAULT);
     ::UpdateWindow(hwnd);
 
-    // Setup Dear ImGui context
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO(); (void)io;
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
 
-    // Setup Dear ImGui style
-    ImGuiStyle& style = ImGui::GetStyle();
     ImGui::StyleColorsDark();
-    //ImGui::StyleColorsLight();
-    //style.FontSizeBase = 16.0f;           // Default to 13.0f when unspecified, which allows crisp legacy font for non-4K screens.
-    style.FrameRounding = 3.0f;
-    style.GrabRounding = 3.0f;
+    ImGui::GetStyle().ScaleAllSizes(main_scale);
+    ImGui::GetStyle().FontScaleDpi = main_scale;
 
-    // Setup scaling
-    style.ScaleAllSizes(main_scale);        // Bake a fixed style scale. (until we have a solution for dynamic style scaling, changing this requires resetting Style + calling this again)
-    style.FontScaleDpi = main_scale;        // Set initial font scale. (in docking branch: using io.ConfigDpiScaleFonts=true automatically overrides this for every window depending on the current monitor)
-
-    // Setup Platform/Renderer backends
     ImGui_ImplWin32_Init(hwnd);
     ImGui_ImplDX11_Init(g_pd3dDevice, g_pd3dDeviceContext);
 
-    // Load Fonts
-    // - If fonts are not explicitly loaded, Dear ImGui will select an embedded font: either AddFontDefaultVector() or AddFontDefaultBitmap().
-    //   This selection is based on (style.FontSizeBase * style.FontScaleMain * style.FontScaleDpi) reaching a threshold.
-    // - You can load multiple fonts and use ImGui::PushFont()/PopFont() to select them.
-    // - If a file cannot be loaded, AddFont functions will return a nullptr. Please handle those errors in your code (e.g. use an assertion, display an error and quit).
-    // - Read 'docs/FONTS.md' for more instructions and details.
-    // - Use '#define IMGUI_ENABLE_FREETYPE' in your imconfig file to use FreeType for higher quality font rendering.
-    // - Remember that in C/C++ if you want to include a backslash \ in a string literal you need to write a double backslash \\ !
-    //io.Fonts->AddFontDefaultVector();
-    //io.Fonts->AddFontDefaultBitmap();
-    //io.Fonts->AddFontFromFileTTF("c:\\Windows\\Fonts\\segoeui.ttf");
-    //io.Fonts->AddFontFromFileTTF("../../misc/fonts/DroidSans.ttf");
-    //io.Fonts->AddFontFromFileTTF("../../misc/fonts/Roboto-Medium.ttf");
-    //io.Fonts->AddFontFromFileTTF("../../misc/fonts/Cousine-Regular.ttf");
-    //ImFont* font = io.Fonts->AddFontFromFileTTF("c:\\Windows\\Fonts\\ArialUni.ttf");
-    //IM_ASSERT(font != nullptr);
+    // Start video playback (Replace payload string with your converted video path)
+    InitMediaEngine(g_pd3dDevice, L"C:\\Users\\Administrator\\source\\repos\\conker-decompiled\\conker-decompiled\\BootIntro.mp4");
 
-    // Our state
-    bool show_demo_window = true;
-    bool show_another_window = false;
-    ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
-
-    // Main loop
     bool done = false;
     while (!done)
     {
-        // Poll and handle messages (inputs, window resize, etc.)
-        // See the WndProc() function below for our to dispatch events to the Win32 backend.
         MSG msg;
         while (::PeekMessage(&msg, nullptr, 0U, 0U, PM_REMOVE))
         {
@@ -102,10 +211,10 @@ int main(int, char**)
             if (msg.message == WM_QUIT)
                 done = true;
         }
-        if (done)
+        if (done) {
             break;
+        }
 
-        // Handle window being minimized or screen locked
         if (g_SwapChainOccluded && g_pSwapChain->Present(0, DXGI_PRESENT_TEST) == DXGI_STATUS_OCCLUDED)
         {
             ::Sleep(10);
@@ -113,7 +222,6 @@ int main(int, char**)
         }
         g_SwapChainOccluded = false;
 
-        // Handle window resize (we don't resize directly in the WM_SIZE handler)
         if (g_ResizeWidth != 0 && g_ResizeHeight != 0)
         {
             CleanupRenderTarget();
@@ -122,62 +230,45 @@ int main(int, char**)
             CreateRenderTarget();
         }
 
-        // Start the Dear ImGui frame
+        // Fetch newly unrolled video texture payloads from Media Foundation
+        if (g_VideoPlaying) {
+
+            UpdateVideoFrame();
+        }
+
         ImGui_ImplDX11_NewFrame();
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
 
-        // 1. Show the big demo window (Most of the sample code is in ImGui::ShowDemoWindow()! You can browse its code to learn more about Dear ImGui!).
-        if (show_demo_window)
-            ImGui::ShowDemoWindow(&show_demo_window);
-
-        // 2. Show a simple window that we create ourselves. We use a Begin/End pair to create a named window.
+        // Display the Native Video Window
         {
-            static float f = 0.0f;
-            static int counter = 0;
+            ImGui::Begin("Native MP4 Playback Layer");
 
-            ImGui::Begin("Hello, world!");                          // Create a window called "Hello, world!" and append into it.
+            if (g_pVideoSRV)
+            {
+                // Pull texture width/height and feed straight to ImGui image element
+                ImGui::Image((ImTextureID)g_pVideoSRV, ImVec2((float)g_VideoWidth, (float)g_VideoHeight));
+            }
+            else
+            {
+                ImGui::Text("Opening video resource stream...");
+            }
 
-            ImGui::Text("This is some useful text.");               // Display some text (you can use a format strings too)
-            ImGui::Checkbox("Demo Window", &show_demo_window);      // Edit bools storing our window open/close state
-            ImGui::Checkbox("Another Window", &show_another_window);
-
-            ImGui::SliderFloat("float", &f, 0.0f, 1.0f);            // Edit 1 float using a slider from 0.0f to 1.0f
-            ImGui::ColorEdit3("clear color", (float*)&clear_color); // Edit 3 floats representing a color
-
-            if (ImGui::Button("Button"))                            // Buttons return true when clicked (most widgets return true when edited/activated)
-                counter++;
-            ImGui::SameLine();
-            ImGui::Text("counter = %d", counter);
-
-            ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / io.Framerate, io.Framerate);
             ImGui::End();
         }
 
-        // 3. Show another simple window.
-        if (show_another_window)
-        {
-            ImGui::Begin("Another Window", &show_another_window);   // Pass a pointer to our bool variable (the window will have a closing button that will clear the bool when clicked)
-            ImGui::Text("Hello from another window!");
-            if (ImGui::Button("Close Me"))
-                show_another_window = false;
-            ImGui::End();
-        }
-
-        // Rendering
+        // Clear and render backends
         ImGui::Render();
-        const float clear_color_with_alpha[4] = { clear_color.x * clear_color.w, clear_color.y * clear_color.w, clear_color.z * clear_color.w, clear_color.w };
+        const float clear_color_with_alpha[4] = { 0.45f * 1.0f, 0.55f * 1.0f, 0.60f * 1.0f, 1.00f };
         g_pd3dDeviceContext->OMSetRenderTargets(1, &g_mainRenderTargetView, nullptr);
         g_pd3dDeviceContext->ClearRenderTargetView(g_mainRenderTargetView, clear_color_with_alpha);
         ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
 
-        // Present
-        HRESULT hr = g_pSwapChain->Present(1, 0);   // Present with vsync
-        //HRESULT hr = g_pSwapChain->Present(0, 0); // Present without vsync
-        g_SwapChainOccluded = (hr == DXGI_STATUS_OCCLUDED);
+        g_pSwapChain->Present(1, 0);
     }
 
-    // Cleanup
+    // Pipeline destruction sequences
+    ShutdownMediaEngine();
     ImGui_ImplDX11_Shutdown();
     ImGui_ImplWin32_Shutdown();
     ImGui::DestroyContext();
@@ -185,6 +276,7 @@ int main(int, char**)
     CleanupDeviceD3D();
     ::DestroyWindow(hwnd);
     ::UnregisterClassW(wc.lpszClassName, wc.hInstance);
+    CoUninitialize();
 
     return 0;
 }
@@ -276,4 +368,13 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         return 0;
     }
     return ::DefWindowProcW(hWnd, msg, wParam, lParam);
+}
+
+void* GameAlloc(unsigned size, const char* file, int line, unsigned align)
+{
+    if (align == (unsigned)-1) align = size < 32 ? 4 : 16;
+    if (align < sizeof(void*)) align = sizeof(void*);
+    void* p = _aligned_malloc(size ? size : 1, align);
+    if (!p) __debugbreak();
+    return p;
 }

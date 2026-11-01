@@ -1,12 +1,15 @@
-// Conker: Live & Reloaded - type definitions mirroring the Xbox kernel / NT layer
-// used by the reconstructed boot chain (see bootchain.cpp).
+// Conker: Live & Reloaded - ported boot chain types.
+// One-to-one mirror of the retail .text routines (default.xbe, Mar 2005 proto);
+// each routine keeps its retail address comment so IDA cross-references stay
+// valid. Kernel-layer calls are remapped onto Win32/x86 equivalents
+// (mapping table in bootchain.cpp).
 
 #pragma once
 #include <windows.h>
 // NTSTATUS, HANDLE and CRITICAL_SECTION come from the Windows SDK headers
 
-// Xbox TEB (thread environment block). Only the fields actually touched by
-// the boot-chain routines are modelled here; offsets follow the shipped image.
+// Modelled TEB (the Xbox TEB lives at fs:[28h]). Under MSVC the same field
+// layout is kept behind GetGameTeb(); no raw FS access.
 typedef struct TebX {
     DWORD StackBase;            // offset 0x00
     DWORD _pad1[7];           // pad through 0x24
@@ -16,6 +19,7 @@ typedef struct TebX {
     DWORD   ActiveRpcHandle;     // 0x28 : context/RPC handle field
 } TebX;
 
+extern int dos_error;          // sub_4237C4 DOS-error sink
 
 // phase callbacks
 typedef int  (__stdcall *PFN_PHASE_CALLBACK)(int);
@@ -29,7 +33,12 @@ typedef int (__stdcall *PFN_GAME_MAIN)(DWORD, DWORD, DWORD, DWORD, DWORD,
 // the thread-entry shim (retail sub_425BD9)
 typedef int (__stdcall *PFN_THREAD_ENTRY)(PFN_GAME_MAIN, DWORD);
 
-// kernel entry points (retail import table, XBOXKRNL module)
+// kernel entry points (retail import table, XBOXKRNL module). Implemented as
+// thin wrappers over Win32 APIs in bootchain.cpp:
+//   PsCreateSystemThreadEx -> CreateThread / ResumeThread
+//   NtClose              -> CloseHandle
+//   HalReturnToFirmware  -> ExitProcess
+//   RtlNtStatusToDosError -> local NTSTATUS->DOS error table
 NTSTATUS PsCreateSystemThreadEx(void** ThreadId, DWORD Priority, PVOID StartAddress,
                                ULONG StackSizeInBytes, PCONTEXT Context,
                                PVOID ArgumentPointer, DWORD StartFlags,
@@ -42,8 +51,10 @@ int  RtlLeaveCriticalSection(void* critsec);
 int  NtClose(HANDLE h);
 
 // forward declarations (defined in bootchain.cpp before use sites)
+void InitBootChainState(void);
+TebX* GetGameTeb(void);
 int __stdcall GameThreadEntry(PFN_GAME_MAIN main_routine, DWORD arg1);
-int  GameMainRoutine(DWORD a1, DWORD a2, DWORD a3, DWORD a4, DWORD a5,
-                      DWORD* a6, DWORD* a7, DWORD a8, DWORD a9, DWORD a10,
-                      DWORD a11, DWORD a12, DWORD a13, DWORD a14, DWORD a15);
-ULONG FatalFallback(int code, void* ctx, int a3, int a4);
+int __stdcall GameMainRoutine(DWORD a1, DWORD a2, DWORD a3, DWORD a4, DWORD a5,
+                             DWORD* a6, DWORD* a7, DWORD a8, DWORD a9, DWORD a10,
+                             DWORD a11, DWORD a12, DWORD a13, DWORD a14, DWORD a15);
+ULONG __stdcall FatalFallback(int code, void* ctx, int a3, int a4);
