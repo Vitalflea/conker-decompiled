@@ -4,4 +4,7 @@
     <Platform Name="x86" />
   </Configurations>
   <Project Path="conker-decompiled/conker-decompiled.vcxproj" />
+  <Project Path="externals/imgui/imgui.vcxproj">
+    <BuildType Project="Stable-Release" />
+  </Project>
 </Solution>
