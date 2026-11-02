@@ -11,7 +11,7 @@
 #include "media/VideoPlayer.hpp"
 #include "Package.hpp"
 #include "TextureTest.hpp"
-#include "ModelViewer.h"
+#include "ModelViewer.hpp"
 static Package            g_package;
 static TextureTestReport  g_textureReport;
 static ModelViewer modelViewer;

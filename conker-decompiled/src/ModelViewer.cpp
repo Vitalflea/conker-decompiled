@@ -1,4 +1,4 @@
-#include "ModelViewer.h"
+#include "ModelViewer.hpp"
 #include "TextureLoader.hpp"
 #include "imgui.h"
 #include <d3dcompiler.h>
@@ -19,20 +19,23 @@ cbuffer VSConstants : register(b0)
 cbuffer PSConstants : register(b1)
 {
     float4 gTint;
+    float4 gLightDir;       // direction TOWARDS the light (xyz)
     float gHasTexture;
-    float3 gPad;
+    float gLighting;
+    float2 gPad;
 };
 Texture2D gTex : register(t0);
 SamplerState gSmp : register(s0);
 
-struct VSIn  { float3 pos : POSITION; float2 uv : TEXCOORD0; };
-struct VSOut { float4 pos : SV_POSITION; float2 uv : TEXCOORD0; };
+struct VSIn  { float3 pos : POSITION; float2 uv : TEXCOORD0; float3 nrm : NORMAL; };
+struct VSOut { float4 pos : SV_POSITION; float2 uv : TEXCOORD0; float3 nrm : TEXCOORD1; };
 
 VSOut VS(VSIn i)
 {
     VSOut o;
     o.pos = mul(float4(i.pos, 1.0), gWorldViewProj);
     o.uv = i.uv;
+    o.nrm = i.nrm;      // model space, the model matrix is the identity
     return o;
 }
 
@@ -41,12 +44,19 @@ float4 PS(VSOut i) : SV_Target
     float3 c = gTint.rgb;
     if (gHasTexture > 0.5)
         c = gTex.Sample(gSmp, i.uv).rgb;
+
+    float len = length(i.nrm);
+    if (gLighting > 0.5 && len > 0.5)
+    {
+        float ndl = dot(i.nrm / len, gLightDir.xyz);
+        c *= 0.35 + 0.65 * saturate(ndl);
+    }
     return float4(c, 1.0);
 }
 )HLSL";
 
 struct VSConstants { XMFLOAT4X4 wvp; };
-struct PSConstants { float tint[4]; float hasTexture; float pad[3]; };
+struct PSConstants { float tint[4]; float lightDir[4]; float hasTexture; float lighting; float pad[2]; };
 
 static int Log2i(UINT v) { int r = 0; while (v > 1) { v >>= 1; ++r; } return r; }
 
@@ -82,8 +92,9 @@ bool ModelViewer::Init(ID3D11Device* device, Package* package)
     {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,  D3D11_INPUT_PER_VERTEX_DATA, 0 },
         { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 20, D3D11_INPUT_PER_VERTEX_DATA, 0 },
     };
-    if (FAILED(device->CreateInputLayout(il, 2, vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), m_layout.GetAddressOf())))
+    if (FAILED(device->CreateInputLayout(il, 3, vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), m_layout.GetAddressOf())))
     {
         m_status = "CreateInputLayout failed";
         return false;
@@ -178,8 +189,8 @@ void ModelViewer::RebuildSkeleton()
     {
         if (b.parent < 0 || b.parent >= (int)m_bones.size()) continue;
         const ModelBone& p = m_bones[b.parent];
-        lines.push_back({ p.world[0], p.world[1], p.world[2], 0, 0 });
-        lines.push_back({ b.world[0], b.world[1], b.world[2], 0, 0 });
+        lines.push_back({ p.world[0], p.world[1], p.world[2], 0, 0, 0, 0, 0 });
+        lines.push_back({ b.world[0], b.world[1], b.world[2], 0, 0, 0, 0, 0 });
     }
     if (lines.empty()) return;
 
@@ -409,6 +420,8 @@ void ModelViewer::DrawUI()
     ImGui::Checkbox("Cull back faces", &m_cullBack);
     ImGui::SameLine();
     ImGui::Checkbox("Skeleton", &m_showBones);
+    ImGui::SameLine();
+    ImGui::Checkbox("Lighting", &m_lighting);
     ImGui::SliderFloat("Camera speed", &m_speed, 1.0f, 2000.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
     if (ImGui::Button("Reset camera")) ResetCamera();
     ImGui::TextDisabled("Right mouse = look, WASD move, Q/E down/up, Shift fast, wheel = speed");
@@ -505,6 +518,10 @@ void ModelViewer::Render(ID3D11DeviceContext* ctx, ID3D11RenderTargetView* rtv)
     ctx->OMSetDepthStencilState(m_depthState.Get(), 0);
     ctx->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
 
+    // headlight: the light comes from the camera, so lit faces are the ones facing you
+    XMFLOAT3 lightDir;
+    XMStoreFloat3(&lightDir, XMVectorNegate(XMVector3Normalize(fwd)));
+
     // ---- triangles
     ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     const UINT stride = sizeof(ModelVertex), offset = 0;
@@ -513,7 +530,7 @@ void ModelViewer::Render(ID3D11DeviceContext* ctx, ID3D11RenderTargetView* rtv)
         if (!s.visible || s.indexCount == 0) continue;
 
         ID3D11ShaderResourceView* srv = (s.texSlot >= 0 && s.texSlot < (int)m_tex.size()) ? m_tex[s.texSlot].srv.Get() : nullptr;
-        PSConstants pc = { { 0.7f, 0.7f, 0.7f, 1.0f }, srv ? 1.0f : 0.0f, { 0, 0, 0 } };
+        PSConstants pc = { { 0.7f, 0.7f, 0.7f, 1.0f }, { lightDir.x, lightDir.y, lightDir.z, 0.0f }, srv ? 1.0f : 0.0f, m_lighting ? 1.0f : 0.0f, { 0, 0 } };
         ctx->UpdateSubresource(m_cbPS.Get(), 0, nullptr, &pc, 0, 0);
         ctx->PSSetShaderResources(0, 1, &srv);
 
@@ -526,7 +543,7 @@ void ModelViewer::Render(ID3D11DeviceContext* ctx, ID3D11RenderTargetView* rtv)
     // ---- skeleton lines, drawn on top of everything
     if (m_showBones && m_boneVB && m_boneVertexCount > 0)
     {
-        PSConstants pc = { { 1.0f, 0.9f, 0.1f, 1.0f }, 0.0f, { 0, 0, 0 } };
+        PSConstants pc = { { 1.0f, 0.9f, 0.1f, 1.0f }, { 0, 0, 0, 0 }, 0.0f, 0.0f, { 0, 0 } };
         ctx->UpdateSubresource(m_cbPS.Get(), 0, nullptr, &pc, 0, 0);
         ID3D11ShaderResourceView* none = nullptr;
         ctx->PSSetShaderResources(0, 1, &none);

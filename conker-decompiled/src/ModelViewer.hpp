@@ -1,11 +1,10 @@
-#pragma once
-
 #define NOMINMAX
+#pragma once
 // Free-fly D3D11 viewer for decoded scenegraph models. Several scenegraphs can be shown together
 // (e.g. Conker = 4 plus his tail = 47), and the bind pose skeleton can be overlaid.
 // Controls: hold RIGHT MOUSE to look, W/A/S/D to move, Q/E down/up, Shift = fast, mouse wheel = speed.
 #include "Package.hpp"
-#include "SceneGraph.h"
+#include "SceneGraph.hpp"
 #include <d3d11.h>
 #include <DirectXMath.h>
 #include <wrl/client.h>
@@ -88,4 +87,5 @@ private:
     bool m_wire = false;
     bool m_cullBack = false;
     bool m_showBones = false;
+    bool m_lighting = true;
 };

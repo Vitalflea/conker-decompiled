@@ -1,10 +1,8 @@
 #pragma once
+#define NOMINMAX
 // Decodes the static geometry of a "scenegraph" asset (vertex arrays + NV2A push buffer strips).
 // No D3D here: this produces plain CPU-side data that ModelViewer uploads.
 // Verified on Conker (index 4) and the tail (index 47); see scenegraph_format_notes.md.
-
-#define NOMINMAX
-
 #include "Package.hpp"
 #include <string>
 #include <vector>

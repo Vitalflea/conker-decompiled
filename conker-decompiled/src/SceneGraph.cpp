@@ -1,4 +1,4 @@
-#include "SceneGraph.h"
+#include "SceneGraph.hpp"
 #include <cstring>
 #include <cstdint>
 #include <cmath>
