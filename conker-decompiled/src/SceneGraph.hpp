@@ -53,6 +53,7 @@ struct ModelData
     std::vector<ModelBuffer> buffers;
     std::vector<ModelSubmesh> submeshes;
     std::vector<std::string> textureNames;   // "texturefileN" values, e.g. "F_Conker_Main.1.tga"
+    std::vector<std::string> textureStatus;
     std::vector<u32> textureAssets;          // asset index of each texture in the package, 0 if not found
     float boundsMin[3] = { 0, 0, 0 };
     float boundsMax[3] = { 0, 0, 0 };

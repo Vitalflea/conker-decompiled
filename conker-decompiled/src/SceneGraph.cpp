@@ -91,22 +91,60 @@ namespace
     }
 }
 
-u32 FindTextureAssetByName(const Package& pkg, const std::string& tgaName)
+u32 FindTextureAssetByName(const Package& pkg, const std::string& tgaName, std::string* how)
 {
-    std::string stem = tgaName;
-    const std::string ext = ".tga";
-    if (stem.size() > ext.size() && lower(stem.substr(stem.size() - ext.size())) == ext)
-        stem.erase(stem.size() - ext.size());
-    if (stem.empty()) return 0;
+    auto say = [&](const std::string& m) { if (how) *how = m; };
 
-    const std::string needle = "\\" + lower(stem) + "\\";
+    std::string stem = tgaName;
+    for (const char* e : { ".tga", ".iff" })   // some scenegraphs name their texture "xxx.iff" (e.g. reflection_1.iff)
+    {
+        const std::string ext = e;
+        if (stem.size() > ext.size() && lower(stem.substr(stem.size() - ext.size())) == ext)
+        {
+            stem.erase(stem.size() - ext.size());
+            break;
+        }
+    }
+    if (stem.empty()) { say("slot has no texture name"); return 0; }
+
+    const std::string ls = lower(stem);
+    auto norm = [](const Asset& a) { std::string p = lower(a.path); std::replace(p.begin(), p.end(), '/', '\\'); return p; };
+
+    // 1. folder named exactly like the texture:  ...\<stem>\default.rba
+    const std::string folder = "\\" + ls + "\\";
     for (const Asset& a : pkg.assets())
     {
         if (a.index == 0 || a.type != "texture" || a.path.empty()) continue;
-        std::string p = lower(a.path);
-        std::replace(p.begin(), p.end(), '/', '\\');
-        if (p.find(needle) != std::string::npos) return a.index;
+        if (norm(a).find(folder) != std::string::npos) { say("matched folder \"" + stem + "\" -> asset " + std::to_string(a.index)); return a.index; }
     }
+
+    // 2. the name appears anywhere in a texture path
+    for (const Asset& a : pkg.assets())
+    {
+        if (a.index == 0 || a.type != "texture" || a.path.empty()) continue;
+        if (norm(a).find(ls) != std::string::npos) { say("matched name inside path -> asset " + std::to_string(a.index) + " (" + a.path + ")"); return a.index; }
+    }
+
+    // 3. same name without a trailing ".<digits>" version suffix, as the start of a folder name
+    std::string base = ls;
+    const size_t dot = base.rfind('.');
+    if (dot != std::string::npos && dot + 1 < base.size() && std::all_of(base.begin() + dot + 1, base.end(), [](char ch) { return std::isdigit((unsigned char)ch) != 0; }))
+        base.erase(dot);
+    if (base != ls || true)
+    {
+        const std::string pre = "\\" + base;
+        for (const Asset& a : pkg.assets())
+        {
+            if (a.index == 0 || a.type != "texture" || a.path.empty()) continue;
+            if (norm(a).find(pre) != std::string::npos) { say("matched name without version suffix -> asset " + std::to_string(a.index) + " (" + a.path + ")"); return a.index; }
+        }
+    }
+
+    int textures = 0, unnamed = 0;
+    for (const Asset& a : pkg.assets())
+        if (a.index != 0 && a.type == "texture") { ++textures; if (a.path.empty()) ++unnamed; }
+    say("not found: '" + stem + "' matches none of this package's " + std::to_string(textures) + " texture assets (" +
+        std::to_string(unnamed) + " have no name) - the texture is probably in another package");
     return 0;
 }
 
@@ -171,8 +209,30 @@ bool LoadModelData(const Package& pkg, const Asset& a, ModelData& out, std::stri
         out.textureNames[n] = val;
     }
     out.textureAssets.assign(out.textureNames.size(), 0);
+    out.textureStatus.assign(out.textureNames.size(), std::string());
     for (size_t i = 0; i < out.textureNames.size(); ++i)
-        out.textureAssets[i] = FindTextureAssetByName(pkg, out.textureNames[i]);
+        out.textureAssets[i] = FindTextureAssetByName(pkg, out.textureNames[i], &out.textureStatus[i]);
+    // Fallback: many scenegraphs (18, 24, 35, 57, 61, 75, 79, 99, 113, 116, ...) have no "texturefileN" rows at all, and
+    // their textures are package assets with an EMPTY path, stored directly after the scenegraph. Name lookup can never find
+    // those, so take the run of unnamed texture assets that immediately follows this scenegraph (stop at the first named one,
+    // which belongs to something else, e.g. the global effects textures after scenegraph 130).
+    {
+        int added = 0;
+        for (u32 k = a.index + 1; ; ++k)
+        {
+            const Asset* ta = pkg.findByIndex(k);
+            if (!ta || ta->type != "texture" || !ta->path.empty()) break;
+            if (std::find(out.textureAssets.begin(), out.textureAssets.end(), k) != out.textureAssets.end()) continue;
+            out.textureNames.push_back("(unnamed texture asset " + std::to_string(k) + " following the scenegraph)");
+            out.textureAssets.push_back(k);
+            out.textureStatus.push_back("no name in the scenegraph; taken from the unnamed texture asset " + std::to_string(k) + " stored right after it");
+            ++added;
+        }
+        if (added)
+            out.notes.push_back(std::to_string(added) + " texture(s) were taken from unnamed assets stored after the scenegraph (names unavailable)");
+    }
+    if (out.textureNames.empty())
+        out.notes.push_back("no 'texturefileN' entries were found in this scenegraph, and no unnamed texture assets follow it");
 
     // ---- 3. push buffer array: starts with NV097_NO_OPERATION (noinc, 576 bytes) = 00 01 40 42
     static const u8 marker[4] = { 0x00, 0x01, 0x40, 0x42 };

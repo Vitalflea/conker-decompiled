@@ -77,12 +77,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR pCmdLine, 
 	videoPlayer.Initialize(g_pd3dDevice);
 	videoPlayer.Open(L"C:\\Users\\Administrator\\source\\repos\\conker-decompiled\\conker-decompiled\\BootIntro.mp4", false, true);
     RunTextureTest(g_pd3dDevice, g_package,
-        "C:\\Users\\Administrator\\source\\repos\\conker-decompiled\\iso\\Conker Live & Reloaded (Mar 14, 2005 prototype)\\dvddata\\aid\\zpackage\\General\\Singleplayer\\default.rbm",
+        "C:\\Users\\Administrator\\source\\repos\\conker-decompiled\\iso\\Conker Live & Reloaded (Mar 14, 2005 prototype)\\dvddata\\aid\\zpackage\\General\\Multiplayer\\default.rbm",
         g_textureReport);
 
     modelViewer.Init(g_pd3dDevice, &g_package);
-    modelViewer.LoadModel(4, false);
-    modelViewer.LoadModel(47, true);   // true = add to the scene instead of replacing it
+   // modelViewer.LoadModel(4, false);
+    // modelViewer.LoadModel(47, true);   // true = add to the scene instead of replacing it
     bool done = false;
     while (!done)
     {
