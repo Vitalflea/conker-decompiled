@@ -81,7 +81,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR pCmdLine, 
         g_textureReport);
 
     modelViewer.Init(g_pd3dDevice, &g_package);
-    modelViewer.LoadModel(4, nullptr);
+    modelViewer.LoadModel(4, false);
+    modelViewer.LoadModel(47, true);   // true = add to the scene instead of replacing it
     bool done = false;
     while (!done)
     {

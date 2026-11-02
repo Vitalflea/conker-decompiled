@@ -44,12 +44,23 @@ namespace
         return s;
     }
 
+    // NV2A "CMP" vertex format (type 6): 11:11:10 packed signed-normalised, x in the low 11 bits, then y, then z.
+    void decodeCmp(u32 w, float& x, float& y, float& z)
+    {
+        auto sext = [](u32 v, int bits) { int s = (int)v; if (v & (1u << (bits - 1))) s -= (1 << bits); return s; };
+        x = sext(w & 0x7FF, 11) / 1023.0f;
+        y = sext((w >> 11) & 0x7FF, 11) / 1023.0f;
+        z = sext(w >> 22, 10) / 511.0f;
+        const float len = std::sqrt(x * x + y * y + z * z);
+        if (len > 1e-6f) { x /= len; y /= len; z /= len; }
+    }
+
     // Converts one NV2A draw (primitive op + index list) into triangles. Returns false for unsupported ops.
     bool toTriangles(u32 op, const std::vector<u32>& idx, u32 vertexCount, std::vector<u32>& out)
     {
         auto valid = [&](u32 a, u32 b, u32 c) {
             return a != b && b != c && a != c && a < vertexCount && b < vertexCount && c < vertexCount;
-        };
+            };
         switch (op)
         {
         case 5: // triangles
@@ -176,12 +187,17 @@ bool LoadModelData(const Package& pkg, const Asset& a, ModelData& out, std::stri
         bool active = false;
         u32 op = 0, at = 0;
         std::vector<u32> idx;
-        u32 posTag = 0, uvTag = 0;
-        bool hasPos = false, hasUv = false;
+        u32 posTag = 0, uvTag = 0, nrmTag = 0;
+        bool hasPos = false, hasUv = false, hasNrm = false;
         float posScale = 0, uvScale = 0;
+        bool hasStage1 = false;
+        u32 stage1Tag = 0, stage1Format = 0;
     } cur;
 
     u32 slots[16] = {};
+    u32 fmts[16] = {};
+    bool haveStage1 = false;
+    u32 stage1Tag = 0, stage1Format = 0;
     std::map<u32, float> consts;         // constant register -> x of scale-looking constants
     u32 curReg = 0;
     bool haveReg = false;
@@ -191,69 +207,83 @@ bool LoadModelData(const Package& pkg, const Asset& a, ModelData& out, std::stri
     std::vector<int> stripCount;
 
     auto finishDraw = [&]()
-    {
-        if (!cur.active) return;
-        cur.active = false;
-        if (!cur.hasPos) { out.notes.push_back("draw at gpu+" + std::to_string(cur.at) + ": no v:position array bound"); return; }
-
-        const TagEntry& pe = tags[cur.posTag];
-        if (pe.elem != 6) { out.notes.push_back("draw at gpu+" + std::to_string(cur.at) + ": position element size " + std::to_string(pe.elem) + " (only 3 x s16 supported)"); return; }
-
-        u32 bi;
-        auto it = bufferOf.find(cur.posTag);
-        if (it == bufferOf.end())
         {
-            ModelBuffer mb;
-            mb.positionTag = cur.posTag;
-            mb.posScale = cur.posScale;
-            mb.uvScale = cur.uvScale;
-            const u32 n = pe.size / 6;
-            if ((size_t)pe.gpuRel + (size_t)n * 6 > gsz) { out.notes.push_back("position array runs past .gpu"); return; }
+            if (!cur.active) return;
+            cur.active = false;
+            if (!cur.hasPos) { out.notes.push_back("draw at gpu+" + std::to_string(cur.at) + ": no v:position array bound"); return; }
 
-            u32 un = 0;
-            const TagEntry* ue = nullptr;
-            if (cur.hasUv)
-            {
-                ue = &tags[cur.uvTag];
-                if (ue->elem == 4 && (size_t)ue->gpuRel + ue->size <= gsz) { un = ue->size / 4; mb.hasUv = true; }
-            }
+            const TagEntry& pe = tags[cur.posTag];
+            if (pe.elem != 6) { out.notes.push_back("draw at gpu+" + std::to_string(cur.at) + ": position element size " + std::to_string(pe.elem) + " (only 3 x s16 supported)"); return; }
 
-            mb.vertices.resize(n);
-            for (u32 v = 0; v < n; ++v)
+            u32 bi;
+            auto it = bufferOf.find(cur.posTag);
+            if (it == bufferOf.end())
             {
-                const u8* p = g + pe.gpuRel + 6 * v;
-                ModelVertex& mv = mb.vertices[v];
-                mv.x = rd16s(p) * mb.posScale;
-                mv.y = rd16s(p + 2) * mb.posScale;
-                mv.z = rd16s(p + 4) * mb.posScale;
-                mv.u = mv.v = 0;
-                if (mb.hasUv && v < un)
+                ModelBuffer mb;
+                mb.positionTag = cur.posTag;
+                mb.posScale = cur.posScale;
+                mb.uvScale = cur.uvScale;
+                const u32 n = pe.size / 6;
+                if ((size_t)pe.gpuRel + (size_t)n * 6 > gsz) { out.notes.push_back("position array runs past .gpu"); return; }
+
+                u32 un = 0;
+                const TagEntry* ue = nullptr;
+                if (cur.hasUv)
                 {
-                    const u8* q = g + ue->gpuRel + 4 * v;
-                    mv.u = rd16s(q) * mb.uvScale;
-                    mv.v = rd16s(q + 2) * mb.uvScale;
+                    ue = &tags[cur.uvTag];
+                    if (ue->elem == 4 && (size_t)ue->gpuRel + ue->size <= gsz) { un = ue->size / 4; mb.hasUv = true; }
                 }
-            }
-            bi = (u32)out.buffers.size();
-            bufferOf[cur.posTag] = bi;
-            out.buffers.push_back(std::move(mb));
-            stripCount.push_back(0);
-        }
-        else bi = it->second;
 
-        ModelSubmesh sm;
-        sm.bufferIndex = bi;
-        sm.pushBufferOffset = cur.at;
-        sm.op = cur.op;
-        if (!toTriangles(cur.op, cur.idx, (u32)out.buffers[bi].vertices.size(), sm.indices))
-        {
-            out.notes.push_back("draw at gpu+" + std::to_string(cur.at) + ": unsupported primitive op " + std::to_string(cur.op));
-            return;
-        }
-        sm.label = "buffer " + std::to_string(bi) + " draw " + std::to_string(stripCount[bi]++) +
-                   " (gpu+" + std::to_string(cur.at) + ")";
-        if (!sm.indices.empty()) out.submeshes.push_back(std::move(sm));
-    };
+                u32 nn = 0;
+                const TagEntry* ne = nullptr;
+                if (cur.hasNrm)
+                {
+                    ne = &tags[cur.nrmTag];
+                    if (ne->elem == 4 && (size_t)ne->gpuRel + ne->size <= gsz) { nn = ne->size / 4; mb.hasNormals = true; }
+                }
+
+                mb.vertices.resize(n);
+                for (u32 v = 0; v < n; ++v)
+                {
+                    const u8* p = g + pe.gpuRel + 6 * v;
+                    ModelVertex& mv = mb.vertices[v];
+                    mv.x = rd16s(p) * mb.posScale;
+                    mv.y = rd16s(p + 2) * mb.posScale;
+                    mv.z = rd16s(p + 4) * mb.posScale;
+                    mv.u = mv.v = 0;
+                    mv.nx = mv.ny = mv.nz = 0;
+                    if (mb.hasNormals && v < nn)
+                        decodeCmp(rd32(g + ne->gpuRel + 4 * v), mv.nx, mv.ny, mv.nz);
+                    if (mb.hasUv && v < un)
+                    {
+                        const u8* q = g + ue->gpuRel + 4 * v;
+                        mv.u = rd16s(q) * mb.uvScale;
+                        mv.v = rd16s(q + 2) * mb.uvScale;
+                    }
+                }
+                bi = (u32)out.buffers.size();
+                bufferOf[cur.posTag] = bi;
+                out.buffers.push_back(std::move(mb));
+                stripCount.push_back(0);
+            }
+            else bi = it->second;
+
+            ModelSubmesh sm;
+            sm.bufferIndex = bi;
+            sm.pushBufferOffset = cur.at;
+            sm.op = cur.op;
+            sm.hasStage1 = cur.hasStage1;
+            sm.stage1Tag = cur.stage1Tag;
+            sm.stage1Format = cur.stage1Format;
+            if (!toTriangles(cur.op, cur.idx, (u32)out.buffers[bi].vertices.size(), sm.indices))
+            {
+                out.notes.push_back("draw at gpu+" + std::to_string(cur.at) + ": unsupported primitive op " + std::to_string(cur.op));
+                return;
+            }
+            sm.label = "buffer " + std::to_string(bi) + " draw " + std::to_string(stripCount[bi]++) +
+                " (gpu+" + std::to_string(cur.at) + ")";
+            if (!sm.indices.empty()) out.submeshes.push_back(std::move(sm));
+        };
 
     size_t p = start;
     while (p + 4 <= gsz)
@@ -277,6 +307,14 @@ bool LoadModelData(const Package& pkg, const Asset& a, ModelData& out, std::stri
         {
         case 0x1720:    // NV097_SET_VERTEX_DATA_ARRAY_OFFSET x16: tags of the bound arrays
             for (u32 i = 0; i < 16; ++i) slots[i] = i < c ? rd32(w + 4 * i) : 0;
+            break;
+
+        case 0x1B40:    // NV097_SET_TEXTURE_OFFSET (+ FORMAT in the second word) for stage 1
+            if (c >= 2) { stage1Tag = rd32(w); stage1Format = rd32(w + 4); haveStage1 = true; }
+            break;
+
+        case 0x1760:    // NV097_SET_VERTEX_DATA_ARRAY_FORMAT x16: type (low 4 bits), size, stride
+            for (u32 i = 0; i < 16; ++i) fmts[i] = i < c ? rd32(w + 4 * i) : 0;
             break;
 
         case 0x1EA4:    // transform constant load index
@@ -307,12 +345,17 @@ bool LoadModelData(const Package& pkg, const Asset& a, ModelData& out, std::stri
                 cur.active = true;
                 cur.op = rd32(w);
                 cur.at = (u32)p;
+                cur.hasStage1 = haveStage1;
+                cur.stage1Tag = stage1Tag;
+                cur.stage1Format = stage1Format;
                 for (u32 i = 0; i < 16; ++i)
                 {
                     auto it = tags.find(slots[i]);
                     if (it == tags.end()) continue;
                     if (!cur.hasPos && it->second.label == "v:position") { cur.posTag = slots[i]; cur.hasPos = true; }
                     if (!cur.hasUv && it->second.label == "v:tex0") { cur.uvTag = slots[i]; cur.hasUv = true; }
+                    // only the packed 11:11:10 format (type 6) is understood
+                    if (!cur.hasNrm && it->second.label == "v:normal" && (fmts[i] & 0xF) == 6) { cur.nrmTag = slots[i]; cur.hasNrm = true; }
                 }
 
                 // position scale = larger scale-looking constant, uv scale = smaller one
@@ -367,7 +410,36 @@ bool LoadModelData(const Package& pkg, const Asset& a, ModelData& out, std::stri
 
     if (out.submeshes.empty()) return fail("no triangles decoded");
 
-    // ---- 5. bounds over the buffers actually used
+    // ---- 5. skeleton: "ndSkeleton" node, 36-byte records starting 0x24 bytes after the node start:
+    //         s16 parent, child, sibling, index, ?, ? ; float local[3]; float world[3]
+    for (u32 i = 0; i + 0x24 + 36 <= dsz; i += 4)
+    {
+        if (std::memcmp(d + i, "ndSkeleton", 11) != 0) continue;
+        u32 pos = i + 0x24;
+        for (int n = 0; pos + 36 <= dsz && n < 256; ++n, pos += 36)
+        {
+            const int16_t sh[6] = { rd16s(d + pos), rd16s(d + pos + 2), rd16s(d + pos + 4), rd16s(d + pos + 6), rd16s(d + pos + 8), rd16s(d + pos + 10) };
+            if (sh[3] != n || sh[0] < -1 || sh[0] >= 256 || sh[1] < -1 || sh[1] >= 256 || sh[2] < -1 || sh[2] >= 256) break;
+            ModelBone b;
+            b.index = n;
+            b.fileParent = sh[0];
+            for (int k = 0; k < 3; ++k) { b.local[k] = rdf(d + pos + 12 + 4 * k); b.world[k] = rdf(d + pos + 24 + 4 * k); }
+            out.bones.push_back(b);
+        }
+        // parent from the geometry: world - parentWorld == local
+        for (size_t k = 0; k < out.bones.size(); ++k)
+            for (size_t p = 0; p < out.bones.size(); ++p)
+            {
+                if (p == k) continue;
+                bool match = true;
+                for (int a = 0; a < 3 && match; ++a)
+                    match = std::fabs(out.bones[k].world[a] - out.bones[p].world[a] - out.bones[k].local[a]) < 0.02f;
+                if (match) { out.bones[k].parent = (int)p; break; }
+            }
+        break;
+    }
+
+    // ---- 6. bounds over the buffers actually used
     bool first = true;
     for (const ModelSubmesh& sm : out.submeshes)
     {
