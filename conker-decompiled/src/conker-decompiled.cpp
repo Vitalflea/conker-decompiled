@@ -9,6 +9,12 @@
 #include <tchar.h>
 
 #include "media/VideoPlayer.hpp"
+#include "Package.hpp"
+#include "TextureTest.hpp"
+#include "ModelViewer.h"
+static Package            g_package;
+static TextureTestReport  g_textureReport;
+static ModelViewer modelViewer;
 // Data
 static ID3D11Device* g_pd3dDevice = nullptr;
 static ID3D11DeviceContext* g_pd3dDeviceContext = nullptr;
@@ -70,7 +76,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR pCmdLine, 
     VideoPlayer videoPlayer{};
 	videoPlayer.Initialize(g_pd3dDevice);
 	videoPlayer.Open(L"C:\\Users\\Administrator\\source\\repos\\conker-decompiled\\conker-decompiled\\BootIntro.mp4", false, true);
-    
+    RunTextureTest(g_pd3dDevice, g_package,
+        "C:\\Users\\Administrator\\source\\repos\\conker-decompiled\\iso\\Conker Live & Reloaded (Mar 14, 2005 prototype)\\dvddata\\aid\\zpackage\\General\\Singleplayer\\default.rbm",
+        g_textureReport);
+
+    modelViewer.Init(g_pd3dDevice, &g_package);
+    modelViewer.LoadModel(4, nullptr);
     bool done = false;
     while (!done)
     {
@@ -106,23 +117,25 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR pCmdLine, 
         ImGui_ImplDX11_NewFrame();
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
-
+        
+		modelViewer.Update(io.DeltaTime);   
+        modelViewer.DrawUI();
         // Display the Native Video Window
         {
 
-            if (videoPlayer.IsFinished()) {
+            //if (videoPlayer.IsFinished()) {
 
-                ImGui::Begin("Native MP4 Playback Ended");
+               // ImGui::Begin("Native MP4 Playback Ended");
 
+               // modelViewer.Render(g_pd3dDeviceContext, g_mainRenderTargetView);
 
-
-                ImGui::End();
-            }
-            else 
-            if (videoPlayer.IsReady()) {
-                videoPlayer.Update();
-                videoPlayer.DrawImGuiWindow("asd");
-            }
+                //ImGui::End();
+           // }
+            //else 
+           // if (videoPlayer.IsReady()) {
+                //videoPlayer.Update();
+               // videoPlayer.DrawImGuiWindow("asd");
+           // }
         }
 
         // Clear and render backends
@@ -130,6 +143,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR pCmdLine, 
         const float clear_color_with_alpha[4] = { 0.45f * 1.0f, 0.55f * 1.0f, 0.60f * 1.0f, 1.00f };
         g_pd3dDeviceContext->OMSetRenderTargets(1, &g_mainRenderTargetView, nullptr);
         g_pd3dDeviceContext->ClearRenderTargetView(g_mainRenderTargetView, clear_color_with_alpha);
+		modelViewer.Render(g_pd3dDeviceContext, g_mainRenderTargetView);
         ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
 
         g_pSwapChain->Present(1, 0);

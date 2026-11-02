@@ -147,8 +147,14 @@
     </Manifest>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="src\Caff.cpp" />
     <ClCompile Include="src\conker-decompiled.cpp" />
     <ClCompile Include="src\media\VideoPlayer.cpp" />
+    <ClCompile Include="src\ModelViewer.cpp" />
+    <ClCompile Include="src\Package.cpp" />
+    <ClCompile Include="src\SceneGraph.cpp" />
+    <ClCompile Include="src\TextureLoader.cpp" />
+    <ClCompile Include="src\TextureTest.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\externals\imgui\imgui.vcxproj">
@@ -156,7 +162,12 @@
     </ProjectReference>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="src\Caff.hpp" />
+    <ClInclude Include="src\Common.hpp" />
     <ClInclude Include="src\media\VideoPlayer.hpp" />
+    <ClInclude Include="src\Package.hpp" />
+    <ClInclude Include="src\TextureLoader.hpp" />
+    <ClInclude Include="src\TextureTest.hpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
